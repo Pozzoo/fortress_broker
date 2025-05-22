@@ -8,6 +8,8 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
+#include "nanoid/nanoid.h"
+
 #pragma comment(lib, "Ws2_32.lib")
 
 constexpr int PORT = 8175;
@@ -37,42 +39,36 @@ void handle_client(const SOCKET client_socket) {
         std::string topic;
         iss >> topic;
 
-        switch (command) {
-            case "SUBSCRIBE":
-                if (!topic.empty()) {
-                    std::lock_guard lock(topic_mutex);
-                    topic_subscribers[topic].push_back(client_socket);
-                    std::cout << "Client subscribed to topic: " << topic << "\n";
-                }
-                break;
+        if (command == "SUBSCRIBE") { //TODO: CREATE A TO UPPERCASE FUNCTION
+            if (!topic.empty()) {
+                std::lock_guard lock(topic_mutex);
+                topic_subscribers[topic].push_back(client_socket);
+                std::cout << "Client subscribed to topic: " << topic << "\n";
+            }
+        } else if (command == "PUBLISH") {
+            std::string content;
+            std::getline(iss, content);
 
-            case "PUBLISH":
-                std::string content;
-                std::getline(iss, content);
+            if (!topic.empty()) {
+                std::lock_guard lock(topic_mutex);
+                if (auto it = topic_subscribers.find(topic); it != topic_subscribers.end()) {
+                    for (const SOCKET subscriber_socket : it->second) {
+                        if (subscriber_socket != client_socket) {
+                            std::string full_message = "Topic [" + topic + "]:";
+                            full_message += content;
+                            full_message += "\n";
 
-                if (!topic.empty()) {
-                    std::lock_guard lock(topic_mutex);
-                    if (auto it = topic_subscribers.find(topic); it != topic_subscribers.end()) {
-                        for (const SOCKET subscriber_socket : it->second) {
-                            if (subscriber_socket != client_socket) {
-                                std::string full_message = "Topic [" + topic + "]:";
-                                full_message += content;
-                                full_message += "\n";
-
-                                send(subscriber_socket, full_message.c_str(), static_cast<int>(full_message.size()), 0);
-                            }
+                            send(subscriber_socket, full_message.c_str(), static_cast<int>(full_message.size()), 0);
                         }
                     }
-                    std::cout << "Published to topic: " << topic << " ->" << content << "\n";
                 }
-                break;
-
-            //TODO: ADD A CREATE COMMAND
-
-            default:
-                std::string error_msg = "Unknown command.\n";
-                send(client_socket, error_msg.c_str(), static_cast<int>(error_msg.size()), 0);
-                break;
+                std::cout << "Published to topic: " << topic << " ->" << content << "\n";
+            }
+        } else if (command == "CREATE") {
+            //TODO: IMPLEMENT CREATE TOPIC FUNCTION
+        } else {
+            std::string error_msg = "Unknown command.\n";
+            send(client_socket, error_msg.c_str(), static_cast<int>(error_msg.size()), 0);
         }
 
         //TODO: HANDLE CLIENT DISCONNECT (CLOSE THE SOCKET AND KEEP THE ID)
