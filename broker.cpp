@@ -8,18 +8,38 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
-#include "nanoid/nanoid.h"
+#include "User.h"
 
 #pragma comment(lib, "Ws2_32.lib")
 
 constexpr int PORT = 8175;
 
-std::unordered_map<std::string, std::vector<SOCKET>> topic_subscribers; //TODO: CHANGE THIS TO AN OBJECT ARRAY THAT SAVES THE CLIENTS ID
+std::unordered_map<std::string, User> users;
+
+std::unordered_map<std::string, std::vector<std::string>> topic_subscribers;
 std::mutex topic_mutex;
 
-//TODO: CREATE A PENDING MESSAGE LIST (FOR EACH TOPIC REFERENCING ITS CLIENTS)
+std::unordered_map<std::string, std::vector<std::string>> messages_to_send;
+std::mutex message_mutex;
 
-void handle_client(const SOCKET client_socket) {
+void send_message(const std::string& topic, const std::string& message, const std::string& id, const SOCKET client_socket) {
+    std::string full_message = "Topic [" + topic + "]:";
+    full_message += message;
+    full_message += "\n";
+
+    if (users[id].isConnected()) {
+        if (const SOCKET subscriber_socket = users[id].getCurrentSocket(); subscriber_socket != client_socket) {
+            send(subscriber_socket, full_message.c_str(), static_cast<int>(full_message.size()), 0);
+        }
+    } else {
+        std::lock_guard lock(message_mutex);
+        messages_to_send[full_message].push_back(id);
+    }
+}
+
+void handle_client(User user) {
+    user.setConnected(true);
+    const SOCKET client_socket = user.getCurrentSocket();
     char buffer[1024];
 
     while (true) {
@@ -39,10 +59,10 @@ void handle_client(const SOCKET client_socket) {
         std::string topic;
         iss >> topic;
 
-        if (command == "SUBSCRIBE") { //TODO: CREATE A TO UPPERCASE FUNCTION
+        if (command == "SUBSCRIBE") { //TODO: CREATE A TO_UPPERCASE FUNCTION
             if (!topic.empty()) {
                 std::lock_guard lock(topic_mutex);
-                topic_subscribers[topic].push_back(client_socket);
+                topic_subscribers[topic].push_back(user.getId());
                 std::cout << "Client subscribed to topic: " << topic << "\n";
             }
         } else if (command == "PUBLISH") {
@@ -52,17 +72,11 @@ void handle_client(const SOCKET client_socket) {
             if (!topic.empty()) {
                 std::lock_guard lock(topic_mutex);
                 if (auto it = topic_subscribers.find(topic); it != topic_subscribers.end()) {
-                    for (const SOCKET subscriber_socket : it->second) {
-                        if (subscriber_socket != client_socket) {
-                            std::string full_message = "Topic [" + topic + "]:";
-                            full_message += content;
-                            full_message += "\n";
-
-                            send(subscriber_socket, full_message.c_str(), static_cast<int>(full_message.size()), 0);
-                        }
+                    for (const std::string& id : it->second) {
+                        send_message(topic, content, id, client_socket);
                     }
                 }
-                std::cout << "Published to topic: " << topic << " ->" << content << "\n";
+                std::cout << "Published to topic: " << topic << " -> " << content << "\n";
             }
         } else if (command == "CREATE") {
             //TODO: IMPLEMENT CREATE TOPIC FUNCTION
@@ -71,7 +85,29 @@ void handle_client(const SOCKET client_socket) {
             send(client_socket, error_msg.c_str(), static_cast<int>(error_msg.size()), 0);
         }
 
-        //TODO: HANDLE CLIENT DISCONNECT (CLOSE THE SOCKET AND KEEP THE ID)
+        user.setConnected(false);
+        closesocket(client_socket);
+    }
+}
+
+void authenticate_client(const SOCKET client_socket) {
+    //TODO: AUTHENTICATE CLIENT VIA DIGITAL CERTIFICATE
+    const bool authenticated = true;
+    const std::string certificate = "12345";
+
+    if (authenticated) {
+        if (const auto it = users.find(certificate); it != users.end()) {
+            handle_client(it->second);
+        } else {
+            const User user(certificate, client_socket);
+            users[certificate] = user;
+            handle_client(user);
+        }
+
+    } else {
+        std::string error_msg = "Authentication failed.\n";
+        send(client_socket, error_msg.c_str(), static_cast<int>(error_msg.size()), 0);
+        closesocket(client_socket);
     }
 }
 
@@ -118,7 +154,19 @@ void handle_client(const SOCKET client_socket) {
         }
 
         std::cout << "New client connected.\n";
-        std::thread(handle_client, client_socket).detach();
+        std::thread(authenticate_client, client_socket).detach();
+
+        std::lock_guard lock(message_mutex);
+        for (const auto& [message, pending_users] : messages_to_send) {
+            for (int i = 0; i < messages_to_send[message].size(); ++i) {
+                if (const std::string id = messages_to_send[message].at(i); users[id].isConnected()) {
+                    if (const SOCKET subscriber_socket = users[id].getCurrentSocket()) {
+                        send(subscriber_socket, message.c_str(), static_cast<int>(message.size()), 0);
+                        messages_to_send[message].erase(messages_to_send[message].begin() + i);
+                    }
+                }
+            }
+        }
     }
 }
 

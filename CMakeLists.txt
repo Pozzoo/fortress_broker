@@ -12,7 +12,9 @@ FetchContent_Declare(
 
 FetchContent_MakeAvailable(nanoid_cpp)
 
-add_executable(fortress_broker broker.cpp)
+add_executable(fortress_broker broker.cpp
+        User.cpp
+        User.h)
 
 target_include_directories(fortress_broker PRIVATE
         ${nanoid_cpp_SOURCE_DIR}/inc
